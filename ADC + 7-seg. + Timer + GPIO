@@ -1,0 +1,282 @@
+// ADC + 7-seg. + Timer + GPIO
+// CDS를 손으로 가리면 5초 후에 돌아가고(5-4-3-2-1-0(작동)), 손을 떼면 5초 후에 멈춤(0-1-2-3-4-5(멈춤))
+#include <iom128v.h>
+
+void delay_m(unsigned int m);
+
+void write_data(char d);
+void write_instruction(char i);
+void lcd_init(void);
+void write_string(char *pt);
+void NumbertoTwoDigit(int a);
+void NumbertoFourDigit(int a);
+void NumbertoHex(char a);
+void NumbertoBinary(char a);
+char Hex_convert(char a);
+
+char ADC_Converter(char channel);
+void DectoFloat(int a);
+
+void Get_Freq(int a); // 주파수 계산 함수
+void Get_Duty(int a);
+
+unsigned int adc_result;
+unsigned int dummy=0, msec=0, cnt=5;
+
+char number[10] = {0x04,0x2F,0x18,0x09,0x23,0x41,0x40,0x07,0x00,0x01};
+
+void main(void)
+{
+    DDRG=0x07; //CLCD
+    DDRC=0xff; //CLCD
+    DDRB=0x10; //OC0 핀 설정
+    DDRD=0x7f; //7seg
+
+    lcd_init();
+
+    ADMUX = ((1<<REFS1)|(1<<REFS0)|(1<<ADLAR)|(0<<MUX4)|(0<<MUX3)|(0<<MUX2)|(0<<MUX1)|(1<<MUX0)); // (1<<ADLAR) : p.245 참고
+    ADCSRA = ((1<<ADEN)|(1<<ADSC)|(1<<ADFR)|(0<<ADIF)|(1<<ADIE)|(1<<ADPS2)|(0<<ADPS1)|(1<<ADPS0));
+    // 기존 setting : (1<<ADEN)|(0<<ADSC)|(0<<ADFR)|(0<<ADIF)|(0<<ADIE)|(1<<ADPS2)|(0<<ADPS1)|(1<<ADPS0)
+
+    TCCR0 = (0<<FOC0)|(1<<WGM01)|(0<<WGM00)|(1<<COM01)|(0<<COM00)|(1<<CS02)|(1<<CS01)|(1<<CS00);
+    // CTC & toggle 사용 X & 분주 1024 // 1초 간격 > 주파수 1Hz > 16M / N*(1+OCR0) = 16M / 1024*(1+OCR0)
+    //TIMSK = (1<<OCIE0)|(0<<TOIE0);
+
+    SREG|=0x80;
+
+    while(1){
+        OCR0=157; // 50~157 > 207/2 > 103
+        delay_m(300);
+        write_instruction(0x80);
+        NumbertoFourDigit(adc_result);
+
+        if(adc_result>thresold){
+            while(msec>1000){
+                msec=0;
+                PORTD=number[cnt--];
+                if(cnt==0){
+                    //fan on
+                }
+            }
+        }
+    }
+}
+
+void delay_m(unsigned int m){
+    int i, j;
+    for (i=0;i<m;i++){
+        for (j=0;j<2100;j++){
+            ;
+        }
+    }
+}
+
+void write_data(char d){
+    PORTG=0x06;
+    delay_m(1);
+    PORTC=d;
+    delay_m(1);
+    PORTG=0x04;
+}
+void write_instruction(char i){
+    PORTG=0x02;
+    delay_m(1);
+    PORTC=i;
+    delay_m(1);
+    PORTG=0x00;
+}
+void lcd_init(void){
+    write_instruction(0x30);
+    delay_m(15);
+    write_instruction(0x30);
+    delay_m(15);
+    write_instruction(0x30);
+    delay_m(15);
+    write_instruction(0x30);
+    delay_m(15);
+    write_instruction(0x38);
+    delay_m(15);
+    write_instruction(0x0c);
+    delay_m(15);
+    write_instruction(0x01);
+    delay_m(15);
+}
+void write_string(char *pt){
+    while((*pt>=0x20)&(*pt<=0x7e)){
+        write_data(*pt);
+        pt++;
+    }
+}
+void NumbertoTwoDigit(int a){
+    if(a>=100) a=a%100;
+    if(a>=10){
+        write_data(0x30+a/10);
+        write_data(0x30+a%10);
+    }
+    if(a<10){
+        write_data(' ');
+        write_data(0x30+a);
+    }
+}
+void NumbertoFourDigit(int a){
+    int dummy_1000, dummy_100, dummy_10, dummy_1;
+
+    if(a>=10000) a=a%10000;
+
+    dummy_1000=a/1000;
+    dummy_100=(a%1000)/100;
+    dummy_10=(a%100)/10;
+    dummy_1=a%10;
+
+    if(dummy_1000==0){
+        write_data(' ');
+    }
+    else{
+        write_data(0x30+dummy_1000);
+    }
+
+    if((dummy_100==0)&&(dummy_1000==0)){
+        write_data(' ');
+    }
+    else{
+        write_data(0x30+dummy_100);
+    }
+
+    if((dummy_10==0)&&(dummy_100==0)&&(dummy_1000==0)){
+        write_data(' ');
+    }
+    else{
+        write_data(0x30+dummy_10);
+    }
+
+    write_data(0x30+dummy_1);
+}
+void NumbertoBinary(char a){
+
+    int b=256, i;
+
+    if(a==256) a=a%256;
+
+    if(a==0){
+        for(i=0;i<8;i++){
+            write_data(0x30);
+            if(i==4) write_data(' ');
+        }
+    }
+    else{
+        for(i=8;i>0;i--){
+            if(a/b==0){
+                write_data(0x30);
+            }
+            else{
+                write_data(0x31);
+                a=a%b;
+            }
+            b=b/2;
+            if(i==5) write_data(' ');
+        }
+    }
+}
+void NumbertoHex(char a){
+      char hex_value[4]={'0', 'x', '0', '0'};
+      int i;
+
+      a=a%256;
+      hex_value[2]=Hex_convert(a/16);
+      hex_value[3]=Hex_convert(a%16);
+
+      write_data(hex_value[0]);
+      write_data(hex_value[1]);
+
+      for(i=2;i<4;i++){
+          if((hex_value[i]<0x3a)) write_data(0x30+hex_value[i]);
+          else write_data(hex_value[i]);
+      }
+}
+char Hex_convert(char a){ // 16보다 작은 수가 들어오면, 16진수 한 자리로 바꿈
+
+    if(a==10) return 'A';
+    if(a==11) return 'B';
+    if(a==12) return 'C';
+    if(a==13) return 'D';
+    if(a==14) return 'E';
+    if(a==15) return 'F';
+
+    return a;
+}
+
+char ADC_Converter(char channel){
+
+    ADMUX = ((ADMUX&0xe0)|channel);
+    ADCSRA |= (1<<ADSC);
+    while(ADCSRA&0x40);
+    return ADCH;
+}
+void DectoFloat(int a){
+    float vol=((float)a/1023.0)*5;
+    int v0=(int)vol;
+    int v1=(int)(vol*10)%10;
+    int v2=(int)(vol*100)%10;
+
+    write_data(0x30+v0);
+    write_data('.');
+    write_data(0x30+v1);
+    write_data(0x30+v2);
+}
+
+#pragma interrupt_handler adc_isr:iv_ADC
+void adc_isr(void){
+    adc_result=ADCH;
+}
+
+#pragma interrupt_handler timer0_comp_isr:iv_TIM0_COMP //compare
+void timer0_comp_isr(void){
+    dummy++;
+    if(dummy==123){
+        msec++;
+        dummy=0;
+//        if(msec==1000){
+//            sec++;
+//            msec=0;
+//        }
+    }
+}
+
+#pragma interrupt_handler timer0_ovf_isr:iv_TIM0_OVF
+void timer0_ovf_isr(void){
+//    TCNT0=131;
+//    count++;
+//    if(count==1000){ // 16M / 128 / (256-131) = 1000
+//        sec++;
+//    }
+}
+
+void Get_Freq(int a){
+    unsigned long freq=(unsigned long)8000000/(1+a);
+    unsigned int freq_khz=freq/1000;
+    unsigned int freq_pnt=(freq%1000)/10;
+
+    NumbertoFourDigit(freq_khz);
+    write_data('.');
+    if((freq_pnt<10)&(freq_pnt!=0)){
+        write_data(0x30);
+        NumbertoTwoDigit(freq_pnt);
+    }
+    else if(!freq_pnt){
+        write_data(0x30);
+        write_data(0x30);
+    }
+    else{
+        NumbertoTwoDigit(freq_pnt);
+    }
+}
+
+void Get_Duty(int a){
+    unsigned int duty=a/(255.0)*100;
+    if(duty>99.9){
+        write_string("100%");
+    }
+    else{
+        NumbertoTwoDigit(duty);
+    }
+}
